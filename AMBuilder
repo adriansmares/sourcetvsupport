@@ -50,7 +50,7 @@ for sdk_name in Extension.sdks:
     binary.compiler.linkflags += [task.binary for task in SafetyHook.libsafetyhook if task.target.arch == cxx.target.arch]
 
     # Exception: MSVC's C++20 mode implies /permissive-, which rejects the CUtlRBTree code in hl2sdk's utlrbtree.h
-    # that wrappers.h instantiates.
+    # that extension.cpp instantiates.
     if binary.compiler.like('msvc'):
       binary.compiler.cxxflags += ['/permissive']
 
