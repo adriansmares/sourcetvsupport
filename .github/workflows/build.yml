@@ -93,6 +93,16 @@ jobs:
           ref: ${{ env.STEAMWORKS_SDK_REF }}
           path: dependencies/steamworks-sdk
 
+      # configure.py and AMBuildScript are SourceMod's public/sample_ext, compiled as C++20 instead of C++17. Everything specific to this
+      # extension belongs in AMBuilder and PackageScript.
+      - name: Check the build scripts against the template
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          template=dependencies/sourcemod/public/sample_ext
+          diff -u "$template/configure.py" extension/configure.py
+          sed -e "s#'-std=c++17'#'-std=c++20'#" -e "s#'/std:c++17'#'/std:c++20'#" "$template/AMBuildScript" | diff -u - extension/AMBuildScript
+
       - name: Install AMBuild
         if: matrix.platform == 'windows'
         run: python -m pip install git+https://github.com/alliedmodders/ambuild@${{ env.AMBUILD_REF }}
@@ -102,9 +112,10 @@ jobs:
         run: |
           # github.workspace does not match $GITHUB_WORKSPACE in containerized jobs, see https://github.com/actions/runner/issues/2058
           DEPS="$GITHUB_WORKSPACE/dependencies"
+          export STEAMWORKS_SDK_PATH="$DEPS/steamworks-sdk"
           mkdir -p extension/build
           cd extension/build
-          ${{ matrix.python }} ../configure.py --enable-optimize --sdks=l4d2 --sm-path=$DEPS/sourcemod --mms-path=$DEPS/mmsource-1.12 --hl2sdk-root=$DEPS --hl2sdk-manifest-path=$DEPS/hl2sdk-manifests --targets=${{ env.ARCH }} --swsdk-path=$DEPS/steamworks-sdk
+          ${{ matrix.python }} ../configure.py --enable-optimize --targets=${{ env.ARCH }} --sdks=l4d2 --sm-path=$DEPS/sourcemod --mms-path=$DEPS/mmsource-1.12 --hl2sdk-root=$DEPS --hl2sdk-manifest-path=$DEPS/hl2sdk-manifests
           ambuild
 
       - name: Package
