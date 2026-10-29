@@ -1,0 +1,61 @@
+# vim: set sts=2 ts=8 sw=2 tw=99 et ft=python:
+import os
+
+# Exception: the extension needs the Steamworks SDK headers, which no SourceMod build uses. Its location comes from
+# STEAMWORKS_SDK_PATH, so that configure.py stays the standard one.
+swsdk_root = os.environ.get('STEAMWORKS_SDK_PATH')
+if not swsdk_root or not os.path.isdir(swsdk_root):
+  raise Exception('Could not find a copy of the Steamworks SDK (set STEAMWORKS_SDK_PATH)')
+
+# SourceMod's CDetour is built on safetyhook. Build it the way SourceMod does, from a submodule pinned to the same
+# commit as SourceMod's public/safetyhook.
+class SafetyHookShim(object):
+  def __init__(self):
+    self.all_targets = Extension.all_targets
+    self.libsafetyhook = {}
+
+SafetyHook = SafetyHookShim()
+builder.Build('safetyhook/AMBuilder', {'SafetyHook': SafetyHook})
+
+# The extension.
+project = builder.LibraryProject('sourcetvsupport')
+project.sources += [
+  os.path.join(Extension.sm_root, 'public', 'smsdk_ext.cpp'),
+  'extension/extension.cpp',
+  os.path.join(Extension.sm_root, 'public', 'CDetour', 'detours.cpp'),
+]
+
+# A server plugin that exposes the SourceTV cvars at startup and unloads itself again.
+vsp_project = builder.LibraryProject('vsp')
+vsp_project.sources += [
+  'vsp/plugin_vsp.cpp',
+]
+
+for sdk_name in Extension.sdks:
+  sdk = Extension.sdks[sdk_name]
+  if sdk['name'] in ['mock']:
+    continue
+
+  for cxx in builder.targets:
+    if not cxx.target.arch in sdk['platforms'][cxx.target.platform]:
+      continue
+
+    binary = Extension.HL2ExtConfig(project, builder, cxx, 'sourcetvsupport.ext.' + sdk['extension'], sdk)
+    binary.compiler.cxxincludes += [
+      os.path.join(builder.sourcePath, 'extension'),
+      os.path.join(builder.sourcePath, 'extension', 'sdk'),
+      os.path.join(builder.sourcePath, 'safetyhook', 'include'),
+      os.path.join(swsdk_root, 'public'),
+    ]
+    binary.compiler.linkflags += [task.binary for task in SafetyHook.libsafetyhook if task.target.arch == cxx.target.arch]
+
+    # Exception: MSVC's C++20 mode implies /permissive-, which rejects the CUtlRBTree code in hl2sdk's utlrbtree.h
+    # that extension.cpp instantiates.
+    if binary.compiler.like('msvc'):
+      binary.compiler.cxxflags += ['/permissive']
+
+    # The engine does not recognize a server plugin whose vdf name contains dots.
+    vsp = Extension.HL2ExtConfig(vsp_project, builder, cxx, 'vsp_' + sdk['name'], sdk)
+
+Extension.extensions += builder.Add(project)
+Extension.vsps = builder.Add(vsp_project)

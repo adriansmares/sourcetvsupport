@@ -1,5 +1,5 @@
 # vim: set sts=2 ts=8 sw=2 tw=99 et ft=python:
-import os, sys, shutil
+import os
 
 def ResolveEnvPath(env, folder):
   if env in os.environ:
@@ -21,7 +21,7 @@ def ResolveEnvPath(env, folder):
 
 def Normalize(path):
   return os.path.abspath(os.path.normpath(path))
-
+  
 def SetArchFlags(compiler):
   if compiler.behavior == 'gcc':
     if compiler.target.arch == 'x86_64':
@@ -47,7 +47,7 @@ if not os.path.exists(hl2sdk_manifests_path):
 
 
 SdkHelpers = builder.Eval(hl2sdk_manifests_path, {
-    'Project': 'sourcetvsupport'
+    'Project': 'sm-extension'
 })
 
 class ExtensionConfig(object):
@@ -55,22 +55,17 @@ class ExtensionConfig(object):
     self.sdk_manifests = []
     self.sdks = {}
     self.sdk_targets = []
-    self.binaries = []
     self.extensions = []
     self.generated_headers = None
     self.mms_root = None
     self.sm_root = None
-    self.swsdk_root = None
     self.all_targets = []
     self.target_archs = set()
-    self.libsafetyhook = {}
 
     if builder.options.targets:
       target_archs = builder.options.targets.split(',')
     else:
-      target_archs = ['x86']
-      if builder.backend != 'amb2':
-        target_archs.append('x86_64')
+      target_archs = ['x86', 'x86_64']
 
     for arch in target_archs:
         try:
@@ -86,6 +81,11 @@ class ExtensionConfig(object):
 
     if not self.all_targets:
         raise Exception('No suitable C/C++ compiler was found.')
+
+  def use_auto_versioning(self):
+    if builder.backend != 'amb2':
+      return False
+    return not getattr(builder.options, 'disable_auto_versioning', False)
 
   @property
   def tag(self):
@@ -114,19 +114,6 @@ class ExtensionConfig(object):
     self.sdk_manifests = SdkHelpers.sdk_manifests
     self.sdk_targets = SdkHelpers.sdk_targets
 
-    if builder.options.sm_path:
-      self.sm_root = builder.options.sm_path
-    else:
-      self.sm_root = ResolveEnvPath('SOURCEMOD112', 'sourcemod-1.12')
-      if not self.sm_root:
-        self.sm_root = ResolveEnvPath('SOURCEMOD', 'sourcemod')
-      if not self.sm_root:
-        self.sm_root = ResolveEnvPath('SOURCEMOD_DEV', 'sourcemod-central')
-
-    if not self.sm_root or not os.path.isdir(self.sm_root):
-      raise Exception('Could not find a source copy of SourceMod')
-    self.sm_root = Normalize(self.sm_root)
-
     if builder.options.mms_path:
       self.mms_root = builder.options.mms_path
     else:
@@ -142,17 +129,26 @@ class ExtensionConfig(object):
       raise Exception('Could not find a source copy of Metamod:Source')
     self.mms_root = Normalize(self.mms_root)
 
-    if builder.options.swsdk_path:
-      self.swsdk_root = builder.options.swsdk_path
+    if builder.options.sm_path:
+      self.sm_root = builder.options.sm_path
     else:
-      self.swsdk_root = ResolveEnvPath('STEAMWORKS_SDK_PATH', 'steamworks-sdk')
+      self.sm_root = ResolveEnvPath('SOURCEMOD112', 'sourcemod-1.12')
+      if not self.sm_root:
+        self.sm_root = ResolveEnvPath('SOURCEMOD', 'sourcemod')
+      if not self.sm_root:
+        self.sm_root = ResolveEnvPath('SOURCEMOD_DEV', 'sourcemod')
+      if not self.sm_root:
+        self.sm_root = ResolveEnvPath('SOURCEMOD_DEV', 'sourcemod-central')
 
-    if not self.swsdk_root or not os.path.isdir(self.swsdk_root):
-      raise Exception('Could not find a copy of SteamWorks SDK')
-    self.swsdk_root = Normalize(self.swsdk_root)
+    if not self.sm_root or not os.path.isdir(self.sm_root):
+      raise Exception('Could not find a source copy of SourceMod')
+    self.sm_root = Normalize(self.sm_root)
 
   def configure(self):
-    if not set(self.target_archs).issubset(['x86', 'x86_64']):
+    
+    allowed_archs = ['x86','x86_64']
+
+    if not set(self.target_archs).issubset(allowed_archs):
       raise Exception('Unknown target architecture: {0}'.format(self.target_archs))
 
     for cxx in self.all_targets:
@@ -163,8 +159,8 @@ class ExtensionConfig(object):
       if cxx.version < 1914 and builder.options.generator != 'vs':
         raise Exception(f'Only MSVC 2017 15.7 and later are supported, full C++17 support is required. ({str(cxx.version)} < 1914)')
     elif cxx.family == 'gcc':
-      if cxx.version < 'gcc-9':
-        raise Exception('Only GCC versions 9 or later are supported, full C++17 support is required.')
+      if cxx.version < 'gcc-8':
+        raise Exception('Only GCC versions 8 or later are supported, full C++17 support is required.')
     elif cxx.family == 'clang':
       if cxx.version < 'clang-5':
         raise Exception('Only clang versions 5 or later are supported, full C++17 support is required.')
@@ -207,8 +203,6 @@ class ExtensionConfig(object):
       '-Wno-unused',
       '-Wno-switch',
       '-Wno-array-bounds',
-      '-Wno-unknown-pragmas',
-      '-Wno-dangling-else',
       '-fvisibility=hidden',
     ]
 
@@ -221,34 +215,16 @@ class ExtensionConfig(object):
       '-Wno-overloaded-virtual',
       '-Wno-register',
       '-fvisibility-inlines-hidden',
-      '-std=c++17',
+      '-std=c++20',
     ]
 
+    
     have_gcc = cxx.family == 'gcc'
     have_clang = cxx.family == 'clang'
-    if cxx.version >= 'clang-3.9' or cxx.version == 'clang-3.4' or cxx.version > 'apple-clang-6.0':
-      cxx.cxxflags += ['-Wno-expansion-to-defined']
-    if cxx.version == 'clang-3.9' or cxx.version == 'apple-clang-8.0':
-      cxx.cflags += ['-Wno-varargs']
-    if cxx.version >= 'clang-3.4' or cxx.version >= 'apple-clang-7.0':
-      cxx.cxxflags += ['-Wno-inconsistent-missing-override']
-    if cxx.version >= 'clang-2.9' or cxx.version >= 'apple-clang-3.0':
-      cxx.cxxflags += ['-Wno-null-dereference']
-    if have_clang or (cxx.version >= 'gcc-4.6'):
-      cxx.cflags += ['-Wno-narrowing']
-    if have_clang or (cxx.version >= 'gcc-4.7'):
-      cxx.cxxflags += ['-Wno-delete-non-virtual-dtor']
-    if cxx.version >= 'gcc-4.8':
-      cxx.cflags += ['-Wno-unused-result']
-    if cxx.version >= 'gcc-9.0':
-      cxx.cxxflags += ['-Wno-class-memaccess', '-Wno-packed-not-aligned']
+
+    # Work around errors from smsdk_ext.cpp
     if have_clang:
       cxx.cxxflags += ['-Wno-implicit-exception-spec-mismatch']
-      if cxx.version >= 'apple-clang-5.1' or cxx.version >= 'clang-3.4':
-        cxx.cxxflags += ['-Wno-deprecated-register']
-      else:
-        cxx.cxxflags += ['-Wno-deprecated']
-      cxx.cflags += ['-Wno-sometimes-uninitialized']
 
     # Work around SDK warnings.
     if cxx.version >= 'clang-10.0' or cxx.version >= 'apple-clang-12.0':
@@ -257,20 +233,18 @@ class ExtensionConfig(object):
             '-Wno-tautological-overlap-compare',
         ]
 
-    if cxx.version >= 'clang-21.0':
-        cxx.cflags += ['-Wno-uninitialized-const-pointer']
-
     if have_gcc:
       cxx.cflags += ['-mfpmath=sse']
       cxx.cflags += ['-Wno-maybe-uninitialized']
 
     if builder.options.opt == '1':
-      cxx.cflags += ['-O3']
+        cxx.cflags += ['-O3']
 
     # Don't omit the frame pointer.
     cxx.cflags += ['-fno-omit-frame-pointer']
 
   def configure_msvc(self, cxx):
+
     if builder.options.debug == '1':
       cxx.cflags += ['/MTd']
       cxx.linkflags += ['/NODEFAULTLIB:libcmt']
@@ -289,7 +263,7 @@ class ExtensionConfig(object):
       '/EHsc',
       '/GR-',
       '/TP',
-      '/std:c++17',
+      '/std:c++20',
     ]
     cxx.linkflags += [
       'kernel32.lib',
@@ -341,40 +315,16 @@ class ExtensionConfig(object):
     
   def LibraryBuilder(self, compiler, name):
     binary = compiler.Library(name)
+    self.AddVersioning(binary)
     if binary.compiler.like('msvc'):
       binary.compiler.linkflags += ['/SUBSYSTEM:WINDOWS']
     self.AddCxxCompat(binary)
     return binary
 
-  def ProgramBuilder(self, compiler, name):
-    binary = compiler.Program(name)
-    if '-static-libgcc' in binary.compiler.linkflags:
-      binary.compiler.linkflags.remove('-static-libgcc')
-    if '-lgcc_eh' in binary.compiler.linkflags:
-      binary.compiler.linkflags.remove('-lgcc_eh')
-    if binary.compiler.like('gcc'):
-      binary.compiler.linkflags += ['-lstdc++', '-lpthread']
-    if binary.compiler.like('msvc'):
-      binary.compiler.linkflags += ['/SUBSYSTEM:CONSOLE']
-    return binary
-    
-  def StaticLibraryBuilder(self, compiler, name):
-    return compiler.StaticLibrary(name)
-
   def Library(self, context, compiler, name):
     compiler = compiler.clone()
     SetArchFlags(compiler)
     return self.LibraryBuilder(compiler, name)
-
-  def Program(self, context, compiler, name):
-    compiler = compiler.clone()
-    SetArchFlags(compiler)
-    return self.ProgramBuilder(compiler, name)
-    
-  def StaticLibrary(self, context, compiler, name):
-    compiler = compiler.clone()
-    SetArchFlags(compiler)
-    return self.StaticLibraryBuilder(compiler, name)
 
   def ConfigureForExtension(self, context, compiler):
     compiler.cxxincludes += [
@@ -385,7 +335,6 @@ class ExtensionConfig(object):
       os.path.join(self.sm_root, 'sourcepawn', 'include'),
       os.path.join(self.sm_root, 'public', 'amtl', 'amtl'),
       os.path.join(self.sm_root, 'public', 'amtl'),
-      os.path.join(self.swsdk_root, 'public'),
     ]
     return compiler
 
@@ -417,36 +366,6 @@ class ExtensionConfig(object):
 
     return binary
 
-  def AddCDetour(self, binary):
-    sm_public_path = os.path.join(self.sm_root, 'public')
-    
-    if os.path.exists(os.path.join(sm_public_path, 'safetyhook')):
-      binary.sources += [ os.path.join(sm_public_path, 'CDetour', 'detours.cpp') ]
-      binary.compiler.cxxincludes += [ os.path.join(builder.sourcePath, 'safetyhook', 'include') ]
-
-      for task in self.libsafetyhook:
-        if task.target.arch == binary.compiler.target.arch:
-          binary.compiler.linkflags += [task.binary]
-          return
-      raise Exception('No suitable build of safetyhook was found.')
-    else:
-      binary.sources += [
-        os.path.join(sm_public_path, 'CDetour', 'detours.cpp'),
-        os.path.join(sm_public_path, 'asm', 'asm.c'),
-      ]
-      # sm1.10+
-      libudis_folder = os.path.join(sm_public_path, 'libudis86')
-      if os.path.isdir(libudis_folder):
-        binary.compiler.defines += ['HAVE_STRING_H']
-        binary.sources += [
-          os.path.join(libudis_folder, 'decode.c'),
-          os.path.join(libudis_folder, 'itab.c'),
-          os.path.join(libudis_folder, 'syn-att.c'),
-          os.path.join(libudis_folder, 'syn-intel.c'),
-          os.path.join(libudis_folder, 'syn.c'),
-          os.path.join(libudis_folder, 'udis86.c'),
-        ]
-
   def HL2Library(self, context, compiler, name, sdk):
     binary = self.Library(context, compiler, name)
     self.ConfigureForExtension(context, binary.compiler)
@@ -466,42 +385,18 @@ class ExtensionConfig(object):
     self.ConfigureForExtension(context, binary.compiler)
     return binary
 
-class SafetyHookShim(object):
-  def __init__(self):
-    self.all_targets = {}
-    self.libsafetyhook = {}
-
-if getattr(builder, 'target', None) is not None:
-    sys.stderr.write("Your output folder was configured for AMBuild 2.1.\n")
-    sys.stderr.write("Please remove your output folder and reconfigure to continue.\n")
-    os._exit(1)
-
 Extension = ExtensionConfig()
 Extension.detectSDKs()
 Extension.configure()
-
-if os.path.exists(os.path.join(Extension.sm_root, 'public', 'safetyhook')):
-    # we need to pull safetyhook in locally because ambuild does not take kindly to outside relpaths
-    safetyhook_dest = Normalize(builder.sourcePath + '/safetyhook/')
-    shutil.copytree(os.path.join(Extension.sm_root, 'public', 'safetyhook'), safetyhook_dest, dirs_exist_ok=True)
-
-    SafetyHook = SafetyHookShim()
-    SafetyHook.all_targets = Extension.all_targets
-    builder.Build('safetyhook/AMBuilder', {'SafetyHook': SafetyHook })
-    Extension.libsafetyhook = SafetyHook.libsafetyhook
 
 # This will clone the list and each cxx object as we recurse, preventing child
 # scripts from messing up global state.
 builder.targets = builder.CloneableList(Extension.all_targets)
 
 BuildScripts = [
-  'vsp/AMBuilder',
-  'extension/AMBuilder',
+  'AMBuilder',
+  'PackageScript',
 ]
 
-if builder.backend == 'amb2':
-  BuildScripts += [
-    'PackageScript',
-  ]
-
 builder.Build(BuildScripts, { 'Extension': Extension })
+
